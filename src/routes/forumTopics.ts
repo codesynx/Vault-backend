@@ -21,6 +21,12 @@ const paginationSchema = z.object({
   offset: z.string().optional().transform((val) => parseInt(val || '0', 10)),
 });
 
+const topicMessagesQuerySchema = z.object({
+  limit: z.string().optional().transform((val) => parseInt(val || '50', 10)),
+  offset: z.string().optional().transform((val) => parseInt(val || '0', 10)),
+  includeDeleted: z.string().optional().transform((val) => val === 'true'),
+});
+
 export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
 
@@ -187,14 +193,19 @@ export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const { chatId, topicId } = topicIdSchema.parse(request.params);
-      const { limit, offset } = paginationSchema.parse(request.query);
+      const { limit, offset, includeDeleted } = topicMessagesQuerySchema.parse(request.query);
+
+      const whereClause: Record<string, unknown> = {
+        chatId,
+        forumTopicId: topicId,
+      };
+
+      if (!includeDeleted) {
+        whereClause.deletedOnTelegram = false;
+      }
 
       const messages = await prisma.message.findMany({
-        where: {
-          chatId,
-          forumTopicId: topicId,
-          deletedOnTelegram: false,
-        },
+        where: whereClause,
         orderBy: { telegramCreatedAt: 'desc' },
         take: limit,
         skip: offset,
@@ -245,13 +256,7 @@ export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
         replyMessages.map((m: ReplyMessage) => [m.telegramMessageId.toString(), m])
       );
 
-      const total = await prisma.message.count({
-        where: {
-          chatId,
-          forumTopicId: topicId,
-          deletedOnTelegram: false,
-        },
-      });
+      const total = await prisma.message.count({ where: whereClause });
 
       // Calculate isOutgoing dynamically based on senderId vs current user
       const currentUserIdBigInt = BigInt(request.userId);

@@ -5,6 +5,7 @@ import { tdlibManager } from '../lib/tdlib/manager.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 import { getFromCache, setInCache, cacheKeys, CACHE_TTL } from '../lib/redis.js';
+import { wsManager } from '../lib/websocket.js';
 
 const messagesQuerySchema = z.object({
   limit: z.string().optional().transform((val) => parseInt(val || '50', 10)),
@@ -239,6 +240,69 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
 
       let lastMessageId: number | undefined;
       let unreadCount: number | undefined;
+      let topicIdIsValid = true;
+
+      const markLocalTopicRead = async (lastReadInboxId: number) => {
+        if (!topicId) return;
+        try {
+          await prisma.forumTopic.updateMany({
+            where: {
+              chatId,
+              id: BigInt(topicId),
+            },
+            data: {
+              lastReadInboxId: BigInt(lastReadInboxId),
+              unreadCount: 0,
+              updatedAt: new Date(),
+            },
+          });
+
+          await prisma.message.updateMany({
+            where: {
+              chatId,
+              forumTopicId: BigInt(topicId),
+              telegramMessageId: { lte: BigInt(lastReadInboxId) },
+              isOutgoing: false,
+              deletedOnTelegram: false,
+            },
+            data: { isRead: true },
+          });
+
+          const totalUnread = await prisma.forumTopic.aggregate({
+            where: {
+              chatId,
+              isHidden: false,
+            },
+            _sum: { unreadCount: true },
+          });
+          const chatUnread = totalUnread._sum.unreadCount ?? 0;
+
+          await prisma.chat.updateMany({
+            where: { id: chatId },
+            data: { unreadCount: chatUnread },
+          });
+
+          wsManager.send(request.userId!, {
+            type: 'forum_topic:updated',
+            data: {
+              chatId: chatId.toString(),
+              topicId: String(topicId),
+              unreadCount: 0,
+              lastReadInboxId: String(lastReadInboxId),
+            },
+          });
+
+          wsManager.send(request.userId!, {
+            type: 'chat:updated',
+            data: {
+              id: chatId.toString(),
+              unreadCount: chatUnread,
+            },
+          });
+        } catch (err) {
+          logger.warn({ err, chatId: chatId.toString(), topicId }, 'Failed to update local forum read state');
+        }
+      };
 
       if (topicId) {
         try {
@@ -252,6 +316,10 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
           lastMessageId = topic.last_message?.id;
           unreadCount = topic.unread_count;
         } catch (err) {
+          const errAny = err as { code?: number; message?: string };
+          if (errAny?.code === 400 && errAny?.message?.includes('Invalid forum topic identifier')) {
+            topicIdIsValid = false;
+          }
           logger.warn({ chatId: chatId.toString(), topicId, err }, 'Failed to get forum topic from TDLib, trying local DB');
 
           // Fallback: get last message from local database
@@ -293,7 +361,11 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Only call viewMessages if there are unread messages and we have a last message
-      if (lastMessageId && unreadCount && unreadCount > 0) {
+      if (topicId && !topicIdIsValid) {
+        if (lastMessageId) {
+          await markLocalTopicRead(lastMessageId);
+        }
+      } else if (lastMessageId && unreadCount && unreadCount > 0) {
         try {
           await client.invoke('viewMessages', {
             chat_id: Number(chatId),
@@ -317,6 +389,9 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
             lastMessageId,
             error: viewErr,
           }, 'viewMessages failed (topic may be invalid in TDLib)');
+          if (topicId && lastMessageId) {
+            await markLocalTopicRead(lastMessageId);
+          }
         }
       } else {
         logger.debug({
