@@ -114,7 +114,7 @@ export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return reply.send({
-        topics: topics.map((topic) => ({
+        topics: topics.map((topic: typeof topics[number]) => ({
           id: topic.id.toString(),
           name: topic.name,
           iconColor: topic.iconColor,
@@ -212,10 +212,16 @@ export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
 
       // Fetch referenced messages for replies
       const replyToIds = messages
-        .map((m) => m.replyToTelegramId)
-        .filter((id): id is bigint => id !== null);
+        .map((m: typeof messages[number]) => m.replyToTelegramId)
+        .filter((id: bigint | null): id is bigint => id !== null);
 
-      const replyMessages = replyToIds.length > 0
+      type ReplyMessage = {
+        telegramMessageId: bigint;
+        content: string;
+        sender: { firstName: string; lastName: string | null; username: string | null };
+      };
+
+      const replyMessages: ReplyMessage[] = replyToIds.length > 0
         ? await prisma.message.findMany({
             where: {
               chatId,
@@ -235,8 +241,8 @@ export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
           })
         : [];
 
-      const replyMap = new Map(
-        replyMessages.map((m) => [m.telegramMessageId.toString(), m])
+      const replyMap = new Map<string, ReplyMessage>(
+        replyMessages.map((m: ReplyMessage) => [m.telegramMessageId.toString(), m])
       );
 
       const total = await prisma.message.count({
@@ -251,7 +257,7 @@ export async function forumTopicRoutes(app: FastifyInstance): Promise<void> {
       const currentUserIdBigInt = BigInt(request.userId);
 
       return reply.send({
-        messages: messages.map((msg) => {
+        messages: messages.map((msg: typeof messages[number]) => {
           const replyMsg = msg.replyToTelegramId
             ? replyMap.get(msg.replyToTelegramId.toString())
             : null;

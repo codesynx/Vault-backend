@@ -76,7 +76,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
 
       // For private chats with generic titles, fetch the other user's name
       const chatsWithTitles = await Promise.all(
-        chats.map(async (chat) => {
+        chats.map(async (chat: typeof chats[number]) => {
           let title = chat.title;
           let user: { firstName: string; lastName: string | null; username: string | null } | undefined;
 

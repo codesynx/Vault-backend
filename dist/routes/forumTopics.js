@@ -158,12 +158,16 @@ export async function forumTopicRoutes(app) {
     // Get messages for a specific topic
     app.get('/api/chats/:chatId/topics/:topicId/messages', async (request, reply) => {
         try {
+            if (!request.userId) {
+                return reply.status(401).send({ error: 'Unauthorized' });
+            }
             const { chatId, topicId } = topicIdSchema.parse(request.params);
             const { limit, offset } = paginationSchema.parse(request.query);
             const messages = await prisma.message.findMany({
                 where: {
                     chatId,
                     forumTopicId: topicId,
+                    deletedOnTelegram: false,
                 },
                 orderBy: { telegramCreatedAt: 'desc' },
                 take: limit,
@@ -179,35 +183,80 @@ export async function forumTopicRoutes(app) {
                     },
                 },
             });
+            // Fetch referenced messages for replies
+            const replyToIds = messages
+                .map((m) => m.replyToTelegramId)
+                .filter((id) => id !== null);
+            const replyMessages = replyToIds.length > 0
+                ? await prisma.message.findMany({
+                    where: {
+                        chatId,
+                        telegramMessageId: { in: replyToIds },
+                    },
+                    select: {
+                        telegramMessageId: true,
+                        content: true,
+                        sender: {
+                            select: {
+                                firstName: true,
+                                lastName: true,
+                                username: true,
+                            },
+                        },
+                    },
+                })
+                : [];
+            const replyMap = new Map(replyMessages.map((m) => [m.telegramMessageId.toString(), m]));
             const total = await prisma.message.count({
                 where: {
                     chatId,
                     forumTopicId: topicId,
+                    deletedOnTelegram: false,
                 },
             });
+            // Calculate isOutgoing dynamically based on senderId vs current user
+            const currentUserIdBigInt = BigInt(request.userId);
             return reply.send({
-                messages: messages.map((msg) => ({
-                    // Use chatId_telegramMessageId format for consistency with WebSocket events
-                    id: `${msg.chatId.toString()}_${msg.telegramMessageId.toString()}`,
-                    telegramMessageId: msg.telegramMessageId.toString(),
-                    chatId: msg.chatId.toString(),
-                    forumTopicId: msg.forumTopicId?.toString(),
-                    senderId: msg.senderId.toString(),
-                    content: msg.content,
-                    isOutgoing: msg.isOutgoing,
-                    deletedOnTelegram: msg.deletedOnTelegram,
-                    deletedOnTelegramAt: msg.deletedOnTelegramAt?.toISOString(),
-                    telegramCreatedAt: msg.telegramCreatedAt.toISOString(),
-                    telegramEditedAt: msg.telegramEditedAt?.toISOString(),
-                    sender: msg.sender
-                        ? {
-                            id: msg.sender.id.toString(),
-                            firstName: msg.sender.firstName,
-                            lastName: msg.sender.lastName,
-                            username: msg.sender.username,
-                        }
-                        : undefined,
-                })),
+                messages: messages.map((msg) => {
+                    const replyMsg = msg.replyToTelegramId
+                        ? replyMap.get(msg.replyToTelegramId.toString())
+                        : null;
+                    return {
+                        // Use chatId_telegramMessageId format for consistency with WebSocket events
+                        id: `${msg.chatId.toString()}_${msg.telegramMessageId.toString()}`,
+                        telegramMessageId: msg.telegramMessageId.toString(),
+                        chatId: msg.chatId.toString(),
+                        forumTopicId: msg.forumTopicId?.toString(),
+                        senderId: msg.senderId.toString(),
+                        content: msg.content,
+                        isOutgoing: msg.senderId === currentUserIdBigInt,
+                        isRead: msg.isRead,
+                        deletedOnTelegram: msg.deletedOnTelegram,
+                        deletedOnTelegramAt: msg.deletedOnTelegramAt?.toISOString(),
+                        telegramCreatedAt: msg.telegramCreatedAt.toISOString(),
+                        telegramEditedAt: msg.telegramEditedAt?.toISOString(),
+                        replyToTelegramId: msg.replyToTelegramId?.toString(),
+                        replyToMessage: replyMsg
+                            ? {
+                                id: replyMsg.telegramMessageId.toString(),
+                                senderName: [replyMsg.sender.firstName, replyMsg.sender.lastName]
+                                    .filter(Boolean)
+                                    .join(' ') ||
+                                    replyMsg.sender.username ||
+                                    'Unknown',
+                                content: replyMsg.content,
+                            }
+                            : null,
+                        sender: msg.sender
+                            ? {
+                                id: msg.sender.id.toString(),
+                                firstName: msg.sender.firstName,
+                                lastName: msg.sender.lastName,
+                                username: msg.sender.username,
+                            }
+                            : undefined,
+                    };
+                }),
                 total,
             });
         }

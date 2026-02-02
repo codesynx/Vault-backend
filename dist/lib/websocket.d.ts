@@ -125,6 +125,7 @@ export interface ForumTopicUpdatedEventData {
     unreadCount?: number;
     lastMessagePreview?: string;
     lastMessageAt?: string;
+    lastReadInboxId?: string;
 }
 export interface ForumTopicNewEventData {
     chatId: string;

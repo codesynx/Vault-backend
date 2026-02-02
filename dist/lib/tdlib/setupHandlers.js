@@ -569,10 +569,60 @@ export function setupClientHandlers(client, userId) {
     client.on('updateForumTopic', async (update) => {
         const chatId = update.chat_id;
         const topic = update.forum_topic;
+        // Handle new TDLib format where topic data is directly on update (partial update)
+        // This format includes: forum_topic_id, last_read_inbox_message_id, last_read_outbox_message_id, etc.
         if (!topic) {
-            logger.warn({ update }, 'Received updateForumTopic without topic');
+            const topicId = update.forum_topic_id;
+            if (!topicId) {
+                logger.warn({ update }, 'Received updateForumTopic without topic or forum_topic_id');
+                return;
+            }
+            // This is a partial update (e.g., read status change) - update DB directly
+            const lastReadInboxId = update.last_read_inbox_message_id || 0;
+            const lastReadOutboxId = update.last_read_outbox_message_id || 0;
+            try {
+                // Count local unread messages
+                const localUnreadCount = await prisma.message.count({
+                    where: {
+                        chatId: BigInt(chatId),
+                        forumTopicId: BigInt(topicId),
+                        telegramMessageId: { gt: BigInt(lastReadInboxId) },
+                        isOutgoing: false,
+                        deletedOnTelegram: false,
+                    },
+                });
+                // Update the topic in DB with new read status
+                await prisma.forumTopic.updateMany({
+                    where: {
+                        chatId: BigInt(chatId),
+                        id: BigInt(topicId),
+                    },
+                    data: {
+                        lastReadInboxId: BigInt(lastReadInboxId),
+                        lastReadOutboxId: BigInt(lastReadOutboxId),
+                        unreadCount: localUnreadCount,
+                        updatedAt: new Date(),
+                    },
+                });
+                logger.debug({ chatId, topicId, lastReadInboxId, localUnreadCount }, 'Forum topic read status updated (partial update)');
+                // Send updated info to frontend
+                wsManager.send(userId, {
+                    type: 'forum_topic:updated',
+                    data: {
+                        chatId: String(chatId),
+                        topicId: String(topicId),
+                        unreadCount: localUnreadCount,
+                        lastReadInboxId: String(lastReadInboxId),
+                    },
+                });
+                await invalidateChatsCache();
+            }
+            catch (error) {
+                logger.error({ error, chatId, topicId }, 'Failed to update forum topic read status');
+            }
             return;
         }
+        // Handle old TDLib format with full forum_topic object
         // Sync the topic (calculate local unread count and update DB)
         const localUnreadCount = await syncForumTopic(chatId, topic);
         // Get info for WebSocket event
@@ -594,11 +644,17 @@ export function setupClientHandlers(client, userId) {
         await forumTopicHandlers.updateForumTopicInfo(update);
         const chatId = update.chat_id;
         const info = update.info;
+        // Handle both message_thread_id (older TDLib) and forum_topic_id (newer TDLib)
+        const topicId = info.forum_topic_id ?? info.message_thread_id;
+        if (!topicId) {
+            logger.warn({ chatId, info }, 'updateForumTopicInfo: no topic ID found');
+            return;
+        }
         wsManager.send(userId, {
             type: 'forum_topic:updated',
             data: {
                 chatId: String(chatId),
-                topicId: String(info.message_thread_id),
+                topicId: String(topicId),
                 name: info.name,
                 iconColor: info.icon?.color,
                 iconCustomEmojiId: info.icon?.custom_emoji_id,

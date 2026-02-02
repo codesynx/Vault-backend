@@ -185,27 +185,100 @@ export async function messageRoutes(app) {
                 return reply.status(401).send({ error: 'Unauthorized' });
             }
             const { chatId } = chatIdParamSchema.parse(request.params);
+            const { topicId } = z.object({
+                topicId: z.string().optional().transform((val) => (val ? parseInt(val, 10) : undefined)),
+            }).parse(request.body || {});
             const client = await tdlibManager.getOrCreateClient(request.userId);
             // First, open the chat to inform TDLib user is viewing it
             await client.invoke('openChat', {
                 chat_id: Number(chatId),
             });
-            // Get the chat info to find the last message ID for viewMessages
-            const chatInfo = await client.invoke('getChat', {
-                chat_id: Number(chatId),
-            });
-            // Only call viewMessages if there are unread messages and we have a last message
-            if (chatInfo.last_message?.id && chatInfo.unread_count && chatInfo.unread_count > 0) {
-                await client.invoke('viewMessages', {
+            let lastMessageId;
+            let unreadCount;
+            if (topicId) {
+                try {
+                    // For forum topics, get topic info to find last message
+                    // We cast to any because TdForumTopic might not be fully exported or imported here
+                    const topic = await client.invoke('getForumTopic', {
+                        chat_id: Number(chatId),
+                        message_thread_id: topicId,
+                    });
+                    lastMessageId = topic.last_message?.id;
+                    unreadCount = topic.unread_count;
+                }
+                catch (err) {
+                    logger.warn({ chatId: chatId.toString(), topicId, err }, 'Failed to get forum topic from TDLib, trying local DB');
+                    // Fallback: get last message from local database
+                    const lastLocalMessage = await prisma.message.findFirst({
+                        where: {
+                            chatId,
+                            forumTopicId: BigInt(topicId),
+                            deletedOnTelegram: false,
+                        },
+                        orderBy: { telegramMessageId: 'desc' },
+                        select: { telegramMessageId: true },
+                    });
+                    if (lastLocalMessage) {
+                        lastMessageId = Number(lastLocalMessage.telegramMessageId);
+                        // Count unread messages locally - default to 1 to ensure viewMessages is called
+                        // when user is actively viewing a topic (they want to mark it as read)
+                        const localTopic = await prisma.forumTopic.findUnique({
+                            where: {
+                                chatId_id: { chatId, id: BigInt(topicId) },
+                            },
+                            select: { unreadCount: true },
+                        });
+                        // Always use at least 1 to ensure we try marking as read when user views topic
+                        unreadCount = Math.max(localTopic?.unreadCount ?? 1, 1);
+                        logger.info({ chatId: chatId.toString(), topicId, lastMessageId, unreadCount }, 'Using local DB for forum topic read status');
+                    }
+                    else {
+                        logger.warn({ chatId: chatId.toString(), topicId }, 'No messages found in local DB for topic');
+                    }
+                }
+            }
+            else {
+                // Get the chat info to find the last message ID for viewMessages
+                const chatInfo = await client.invoke('getChat', {
                     chat_id: Number(chatId),
-                    message_ids: [chatInfo.last_message.id],
-                    force_read: true,
                 });
-                logger.info({
+                lastMessageId = chatInfo.last_message?.id;
+                unreadCount = chatInfo.unread_count;
+            }
+            // Only call viewMessages if there are unread messages and we have a last message
+            if (lastMessageId && unreadCount && unreadCount > 0) {
+                try {
+                    await client.invoke('viewMessages', {
+                        chat_id: Number(chatId),
+                        message_thread_id: topicId,
+                        message_ids: [lastMessageId],
+                        force_read: true,
+                    });
+                    logger.info({
+                        chatId: chatId.toString(),
+                        topicId,
+                        lastMessageId,
+                        unreadCount,
+                    }, 'Messages marked as read via viewMessages');
+                }
+                catch (viewErr) {
+                    // Log error but don't fail the request - viewMessages errors are non-critical
+                    // This can happen when topic ID is invalid/stale in TDLib
+                    logger.warn({
+                        chatId: chatId.toString(),
+                        topicId,
+                        lastMessageId,
+                        error: viewErr,
+                    }, 'viewMessages failed (topic may be invalid in TDLib)');
+                }
+            }
+            else {
+                logger.debug({
                     chatId: chatId.toString(),
-                    lastMessageId: chatInfo.last_message.id,
-                    unreadCount: chatInfo.unread_count,
-                }, 'Messages marked as read via viewMessages');
+                    topicId,
+                    lastMessageId,
+                    unreadCount,
+                }, 'Skipping viewMessages - no unread messages or no lastMessageId');
             }
             return reply.send({ success: true });
         }
