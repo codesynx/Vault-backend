@@ -165,7 +165,7 @@ export async function startPhoneAuth(phoneNumber: string): Promise<{ sessionId: 
   return { sessionId, codeInfo: session?.codeInfo };
 }
 
-export async function resendCode(sessionId: string): Promise<void> {
+export async function resendCode(sessionId: string): Promise<{ codeInfo?: Record<string, unknown> }> {
   const session = authSessions.get(sessionId);
   if (!session) {
     throw new Error('Invalid session');
@@ -176,8 +176,50 @@ export async function resendCode(sessionId: string): Promise<void> {
     throw new Error('Auth client not found');
   }
 
-  await client.resendCode();
-  logger.info({ sessionId }, 'Resend code requested');
+  const authState = client.getAuthState();
+  if (authState !== 'authorizationStateWaitCode') {
+    throw new Error(`Cannot resend in state: ${authState}`);
+  }
+
+  const stateDetails = client.getAuthStateDetails() as { code_info?: Record<string, unknown> } | null;
+  const codeInfo = stateDetails?.code_info || session.codeInfo;
+  const timeout = typeof (codeInfo as { timeout?: number } | undefined)?.timeout === 'number'
+    ? (codeInfo as { timeout?: number }).timeout
+    : undefined;
+  const nextType = (codeInfo as { next_type?: unknown } | undefined)?.next_type;
+
+  if (timeout && timeout > 0) {
+    const err = new Error(`Please wait ${timeout} seconds before resending`);
+    (err as Error & { code?: number }).code = 429;
+    throw err;
+  }
+
+  if (!nextType) {
+    throw new Error('Resend is not available for this authentication method');
+  }
+
+  try {
+    await client.resendCode();
+    logger.info({ sessionId }, 'Resend code requested');
+  } catch (err) {
+    const latestDetails = client.getAuthStateDetails() as { code_info?: Record<string, unknown> } | null;
+    const latestCodeInfo = latestDetails?.code_info || codeInfo;
+    const latestTimeout = typeof (latestCodeInfo as { timeout?: number } | undefined)?.timeout === 'number'
+      ? (latestCodeInfo as { timeout?: number }).timeout
+      : undefined;
+    if (latestTimeout && latestTimeout > 0) {
+      const e = new Error(`Please wait ${latestTimeout} seconds before resending`);
+      (e as Error & { code?: number }).code = 429;
+      throw e;
+    }
+    throw err;
+  }
+
+  const updatedDetails = client.getAuthStateDetails() as { code_info?: Record<string, unknown> } | null;
+  const updatedCodeInfo = updatedDetails?.code_info || codeInfo;
+  authSessions.set(sessionId, { ...session, codeInfo: updatedCodeInfo });
+
+  return { codeInfo: updatedCodeInfo };
 }
 
 export async function verifyCode(
@@ -304,6 +346,14 @@ export async function getAuthStatus(sessionId: string): Promise<{ step: string; 
   const session = authSessions.get(sessionId);
   if (!session) {
     throw new Error('Invalid session');
+  }
+
+  const client = tdlibManager.getAuthClient(sessionId);
+  if (client && client.getAuthState() === 'authorizationStateWaitCode') {
+    const stateDetails = client.getAuthStateDetails() as { code_info?: Record<string, unknown> } | null;
+    const codeInfo = stateDetails?.code_info || session.codeInfo;
+    authSessions.set(sessionId, { ...session, codeInfo });
+    return { step: session.authStep, codeInfo };
   }
 
   return { step: session.authStep, codeInfo: session.codeInfo };

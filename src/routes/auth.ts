@@ -107,8 +107,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/auth/resend', authRateLimit, async (request, reply) => {
     try {
       const { sessionId } = resendSchema.parse(request.body);
-      await resendCode(sessionId);
-      return reply.send({ success: true });
+      const result = await resendCode(sessionId);
+      return reply.send({ success: true, codeInfo: result.codeInfo });
     } catch (error: any) {
       logger.error({ error, message: error.message, code: error.code }, 'Resend code failed');
       return reply.status(400).send({
