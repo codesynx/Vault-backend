@@ -8,20 +8,22 @@ import { logger } from '../../utils/logger.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let tdlConfigured = false;
 async function getTdjsonPath() {
-    // First check for local libtdjson.dylib in project root
-    const localPath = resolve(__dirname, '../../../libtdjson.dylib');
-    if (existsSync(localPath)) {
-        logger.info({ path: localPath }, 'Using local TDLib library');
-        return localPath;
-    }
-    // Fall back to prebuilt-tdlib
+    // Use prebuilt-tdlib which provides the correct library for each platform
     try {
         const prebuiltPath = await getTdjson();
         logger.info({ path: prebuiltPath }, 'Using prebuilt TDLib library');
         return prebuiltPath;
     }
     catch (error) {
-        throw new Error('TDLib library not found. Please build TDLib manually:\n' +
+        // Fall back to local library for development (macOS only)
+        const localPath = resolve(__dirname, '../../../libtdjson.dylib');
+        if (existsSync(localPath)) {
+            logger.info({ path: localPath }, 'Using local TDLib library');
+            return localPath;
+        }
+        throw new Error('TDLib library not found. Install prebuilt-tdlib or build TDLib manually:\n' +
+            '1. npm install prebuilt-tdlib\n' +
+            'Or for macOS development:\n' +
             '1. brew install gperf cmake openssl\n' +
             '2. git clone https://github.com/tdlib/td.git /tmp/td\n' +
             '3. cd /tmp/td && mkdir build && cd build\n' +
