@@ -343,6 +343,15 @@ export function setupClientHandlers(client, userId) {
             newMessageId: message.id,
             timestamp: new Date().toISOString()
         }, '[DEBUG] updateMessageSendSucceeded received');
+        const existingBefore = await prisma.message.findUnique({
+            where: {
+                chatId_telegramMessageId: {
+                    chatId: BigInt(message.chat_id),
+                    telegramMessageId: BigInt(message.id),
+                },
+            },
+            select: { id: true },
+        });
         // Delete any message that was archived with the temp/old ID to prevent duplicates
         // This handles race conditions where updateNewMessage might have archived the message
         // before we knew it was from this client
@@ -365,7 +374,7 @@ export function setupClientHandlers(client, userId) {
             logger.warn({ err, chatId: message.chat_id, oldMessageId }, 'Failed to delete temp message');
         }
         // Archive the message with its real ID
-        await archiveMessage(message);
+        const archiveResult = await archiveMessage(message);
         // Invalidate Redis cache so reloads get fresh data with the new message
         await invalidateMessagesCache(String(message.chat_id));
         await invalidateChatsCache();
@@ -379,6 +388,69 @@ export function setupClientHandlers(client, userId) {
                 telegramCreatedAt: new Date(message.date * 1000).toISOString(),
             },
         });
+        // For outgoing messages that were pending, emit message:new so other sessions receive it
+        if (!existingBefore && archiveResult.content) {
+            const senderId = getSenderId(message.sender_id);
+            let senderInfo = null;
+            if (senderId !== BigInt(0)) {
+                const sender = await prisma.user.findUnique({
+                    where: { id: senderId },
+                    select: { firstName: true, lastName: true, username: true },
+                });
+                if (sender) {
+                    senderInfo = sender;
+                }
+            }
+            const chat = await prisma.chat.findUnique({
+                where: { id: BigInt(message.chat_id) },
+                select: { title: true, type: true, isForum: true },
+            });
+            const chatTitle = chat?.title;
+            const chatType = chat?.isForum ? 'forum' : chat?.type;
+            const msgAny = message;
+            const topicIdObj = msgAny.topic_id;
+            const forumTopicId = topicIdObj?.forum_topic_id
+                ? String(topicIdObj.forum_topic_id)
+                : message.message_thread_id
+                    ? String(message.message_thread_id)
+                    : undefined;
+            const senderName = senderInfo
+                ? [senderInfo.firstName, senderInfo.lastName].filter(Boolean).join(' ')
+                : undefined;
+            wsManager.send(userId, {
+                type: 'message:new',
+                data: {
+                    id: `${message.chat_id}_${message.id}`,
+                    chatId: String(message.chat_id),
+                    telegramMessageId: String(message.id),
+                    senderId: String(senderId),
+                    content: archiveResult.content,
+                    isOutgoing: message.is_outgoing,
+                    telegramCreatedAt: new Date(message.date * 1000).toISOString(),
+                    senderName,
+                    topicId: forumTopicId,
+                    chatType,
+                    chatTitle,
+                    sender: senderInfo ? {
+                        id: String(senderId),
+                        firstName: senderInfo.firstName,
+                        lastName: senderInfo.lastName,
+                        username: senderInfo.username,
+                    } : undefined,
+                },
+            });
+            if (forumTopicId) {
+                wsManager.send(userId, {
+                    type: 'forum_topic:updated',
+                    data: {
+                        chatId: String(message.chat_id),
+                        topicId: forumTopicId,
+                        lastMessagePreview: archiveResult.content.substring(0, 255),
+                        lastMessageAt: new Date(message.date * 1000).toISOString(),
+                    },
+                });
+            }
+        }
     });
     // Handle failed message sending
     client.on('updateMessageSendFailed', async (update) => {
