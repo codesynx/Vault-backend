@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id              BigInt    @id
+  firstName       String    @map("first_name")
+  lastName        String?   @map("last_name")
+  username        String?   @unique
+  phoneNumber     String?   @map("phone_number")
+  bio             String?
+  isContact       Boolean   @default(false) @map("is_contact")
+  isMutualContact Boolean   @default(false) @map("is_mutual_contact")
+  isVerified      Boolean   @default(false) @map("is_verified")
+  isBot           Boolean   @default(false) @map("is_bot")
+  lastSeenAt      DateTime? @map("last_seen_at")
+  onlineStatus    String?   @map("online_status")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  sentMessages      Message[]    @relation("MessageSender")
+  topicLastMessages ForumTopic[] @relation("TopicLastMessageSender")
+  chatMemberships   ChatMember[]
+  sessions        Session[]
+  syncState       SyncState?
+
+  @@map("users")
+}
+
+model Session {
+  id               String   @id @default(uuid())
+  userId           BigInt   @map("user_id")
+  jwtToken         String   @unique @map("jwt_token")
+  refreshToken     String   @unique @map("refresh_token")
+  expiresAt        DateTime @map("expires_at")
+  tdlibSessionPath String?  @map("tdlib_session_path")
+  deviceInfo       String?  @map("device_info")
+  ipAddress        String?  @map("ip_address")
+  createdAt        DateTime @default(now()) @map("created_at")
+  lastActiveAt     DateTime @default(now()) @map("last_active_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Chat {
+  id                 BigInt    @id
+  type               String
+  title              String
+  username           String?
+  otherUserId        BigInt?   @map("other_user_id")
+  memberCount        Int?      @map("member_count")
+  description        String?
+  inviteLink         String?   @map("invite_link")
+  canSendMessages    Boolean   @default(true) @map("can_send_messages")
+  isMuted            Boolean   @default(false) @map("is_muted")
+  isPinned           Boolean   @default(false) @map("is_pinned")
+  isArchived         Boolean   @default(false) @map("is_archived")
+  isForum            Boolean   @default(false) @map("is_forum")
+  order              String    @default("0") @map("position_order")
+  lastMessageId      BigInt?   @map("last_message_id")
+  lastMessageAt      DateTime? @map("last_message_at")
+  lastMessagePreview String?   @map("last_message_preview") @db.VarChar(255)
+  unreadCount        Int       @default(0) @map("unread_count")
+  lastReadInboxId    BigInt?   @map("last_read_inbox_id")
+  lastReadOutboxId   BigInt?   @map("last_read_outbox_id")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  messages    Message[]
+  members     ChatMember[]
+  forumTopics ForumTopic[]
+
+  @@index([order(sort: Desc)])
+  @@map("chats")
+}
+
+model ChatMember {
+  id                String   @id @default(uuid())
+  chatId            BigInt   @map("chat_id")
+  userId            BigInt   @map("user_id")
+  role              String   @default("member")
+  canSendMessages   Boolean  @default(true) @map("can_send_messages")
+  canDeleteMessages Boolean  @default(false) @map("can_delete_messages")
+  canInviteUsers    Boolean  @default(false) @map("can_invite_users")
+  canPinMessages    Boolean  @default(false) @map("can_pin_messages")
+  joinedAt          DateTime @default(now()) @map("joined_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@map("chat_members")
+}
+
+model Message {
+  id                     String    @id @default(uuid())
+  telegramMessageId      BigInt    @map("telegram_message_id")
+  chatId                 BigInt    @map("chat_id")
+  forumTopicId           BigInt?   @map("forum_topic_id")
+  senderId               BigInt    @map("sender_id")
+  content                String    @db.Text
+  contentType            String    @default("text") @map("content_type")
+  replyToMessageId       String?   @map("reply_to_message_id")
+  replyToTelegramId      BigInt?   @map("reply_to_telegram_id")
+  forwardedFromChatId    BigInt?   @map("forwarded_from_chat_id")
+  forwardedFromUserId    BigInt?   @map("forwarded_from_user_id")
+  forwardedFromMessageId BigInt?   @map("forwarded_from_message_id")
+  forwardedAt            DateTime? @map("forwarded_at")
+  telegramCreatedAt      DateTime  @map("telegram_created_at")
+  telegramEditedAt       DateTime? @map("telegram_edited_at")
+  archivedAt             DateTime  @default(now()) @map("archived_at")
+  deletedOnTelegram      Boolean   @default(false) @map("deleted_on_telegram")
+  deletedOnTelegramAt    DateTime? @map("deleted_on_telegram_at")
+  deletedBy              String?   @map("deleted_by")
+  editHistory            Json?     @map("edit_history")
+  isOutgoing             Boolean   @default(false) @map("is_outgoing")
+  isRead                 Boolean   @default(false) @map("is_read")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  chat       Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender     User        @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  forumTopic ForumTopic? @relation(fields: [chatId, forumTopicId], references: [chatId, id], onDelete: SetNull)
+
+  @@unique([chatId, telegramMessageId])
+  @@index([chatId, telegramCreatedAt])
+  @@index([senderId])
+  @@index([deletedOnTelegram])
+  @@index([archivedAt])
+  @@index([forumTopicId])
+  @@map("messages")
+}
+
+model SyncState {
+  id               String    @id @default(uuid())
+  userId           BigInt    @unique @map("user_id")
+  lastSyncedAt     DateTime? @map("last_synced_at")
+  lastChatListSync DateTime? @map("last_chat_list_sync")
+  tdlibUpdatePts   Int?      @map("tdlib_update_pts")
+  tdlibUpdateQts   Int?      @map("tdlib_update_qts")
+  tdlibUpdateDate  Int?      @map("tdlib_update_date")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sync_states")
+}
+
+model AuthState {
+  id           String   @id @default(uuid())
+  phoneNumber  String   @unique @map("phone_number")
+  authStep     String   @map("auth_step")
+  sessionPath  String   @map("session_path")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("auth_states")
+}
+
+model ForumTopic {
+  id                   BigInt
+  chatId               BigInt    @map("chat_id")
+  name                 String
+  iconColor            Int?      @map("icon_color")
+  iconCustomEmojiId    String?   @map("icon_custom_emoji_id")
+  creationDate         DateTime  @map("creation_date")
+  creatorUserId        BigInt?   @map("creator_user_id")
+  isGeneral            Boolean   @default(false) @map("is_general")
+  isOutgoing           Boolean   @default(false) @map("is_outgoing")
+  isClosed             Boolean   @default(false) @map("is_closed")
+  isHidden             Boolean   @default(false) @map("is_hidden")
+  unreadCount          Int       @default(0) @map("unread_count")
+  lastReadInboxId      BigInt?   @map("last_read_inbox_id")
+  lastReadOutboxId     BigInt?   @map("last_read_outbox_id")
+  lastMessageId        BigInt?   @map("last_message_id")
+  lastMessageSenderId  BigInt?   @map("last_message_sender_id")
+  lastMessageSender    User?     @relation("TopicLastMessageSender", fields: [lastMessageSenderId], references: [id])
+  lastMessageAt        DateTime? @map("last_message_at")
+  lastMessagePreview   String?   @map("last_message_preview") @db.VarChar(255)
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  chat     Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@id([chatId, id])
+  @@index([chatId])
+  @@map("forum_topics")
+}

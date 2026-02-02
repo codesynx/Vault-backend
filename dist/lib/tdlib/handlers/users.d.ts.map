@@ -1,0 +1,1 @@
+{"version":3,"file":"users.d.ts","sourceRoot":"","sources":["../../../../src/lib/tdlib/handlers/users.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,MAAM,EAAE,QAAQ,EAAE,MAAM,aAAa,CAAC;AAEpD,wBAAsB,QAAQ,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CAkC1D;AAED,wBAAgB,kBAAkB;yBAEH,QAAQ;+BAKF,QAAQ;EA2C5C"}
